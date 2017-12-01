@@ -16,7 +16,7 @@ func (e errStreamNotActive) Error() string {
 // LeaseSyncer is responsible for inserting new leases found in the Kinesis API into the LeaseRepository
 // as well as possibly cleaning up old leases
 type leaseSyncer struct {
-	leaseRepo LeaseRepository
+	leaseRepo leaseRepo
 	logger    Logger
 	kinesis   kinesisProxy
 

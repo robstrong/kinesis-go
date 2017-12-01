@@ -22,7 +22,6 @@ type lease struct {
 	Checkpoint           string
 	ParentShardId        string
 	lastCounterIncrement time.Time
-	ttl                  time.Duration
 }
 
 func (s *lease) IsClosed() bool {
@@ -49,7 +48,7 @@ func (s ShardLease) getShardIteratorInput() *kinesis.GetShardIteratorInput {
 
 // leaseManager is responsible for obtaining leases for the worker and notifying the worker when a lease is lost
 type leaseManager struct {
-	LeaseRepository
+	leaseRepo
 	logger      Logger
 	leaseSyncer *leaseSyncer
 
@@ -65,10 +64,10 @@ type leaseManager struct {
 	shutdown chan struct{}
 }
 
-func newLeaseManager(r LeaseRepository, k *kinesis.Kinesis, config Config) *leaseManager {
+func newLeaseManager(r leaseRepo, k *kinesis.Kinesis, config Config) *leaseManager {
 	lm := &leaseManager{
-		LeaseRepository: r,
-		logger:          DefaultLogger,
+		leaseRepo: r,
+		logger:    DefaultLogger,
 		leaseSyncer: &leaseSyncer{
 			leaseRepo:               r,
 			logger:                  DefaultLogger,
@@ -123,10 +122,11 @@ func (l *leaseManager) RenewLeases() []error {
 	for _, lease := range leases.ownedBy(l.workerID) {
 		//don't renew lost leases
 		if lease.IsExpired(l.leaseTTL, time.Now()) {
+			l.logger.Errorf("lease manager: lease lost when attempting to renew, shardID: %s", lease.Key)
 			errs = append(errs, newLostLeaseError(lease.Key, "lease expired when attempting renewal", nil))
 			continue
 		}
-		err := l.LeaseRepository.RenewLease(lease.Key, lease.Owner, lease.Counter)
+		err := l.leaseRepo.RenewLease(lease.Key, lease.Owner, lease.Counter)
 		if err != nil {
 			errs = append(errs, err)
 		}
@@ -301,7 +301,6 @@ func (l *leaseManager) UpdateLeases() error {
 	l.allLeasesMu.Lock()
 	defer l.allLeasesMu.Unlock()
 	for _, lease := range leases {
-		lease.ttl = l.leaseTTL
 		if oldLease, ok := l.allLeases[lease.Key]; ok {
 			if lease.Counter > oldLease.Counter {
 				lease.lastCounterIncrement = time.Now()

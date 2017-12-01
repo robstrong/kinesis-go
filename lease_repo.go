@@ -7,7 +7,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/dynamodb"
 )
 
-type LeaseRepository interface {
+type leaseRepo interface {
 	GetLeases() ([]*lease, error)
 	CreateLeaseIfNotExists(*lease) error
 
@@ -81,7 +81,7 @@ func (d *DynamoLeaseRepository) UpdateCheckpoint(key, checkpoint, owner string, 
 }
 
 type LeaseCache struct {
-	LeaseRepository
+	leaseRepo
 
 	cacheTTL time.Duration
 
@@ -93,7 +93,7 @@ type LeaseCache struct {
 func (c *LeaseCache) GetLeases() ([]*lease, error) {
 	//if the cached leases aren't expired, return them
 	if c.exp.Before(time.Now()) {
-		leases, err := c.LeaseRepository.GetLeases()
+		leases, err := c.leaseRepo.GetLeases()
 		if err != nil {
 			return leases, err
 		}
@@ -106,7 +106,7 @@ func (c *LeaseCache) GetLeases() ([]*lease, error) {
 
 func (c *LeaseCache) CreateLeaseIfNotExists(l *lease) error {
 	//if creation is successful, add to lease cache
-	err := c.LeaseRepository.CreateLeaseIfNotExists(l)
+	err := c.leaseRepo.CreateLeaseIfNotExists(l)
 	if err != nil {
 		return err
 	}
@@ -127,7 +127,7 @@ func (c *LeaseCache) addToLeaseCacheIfNotExists(l *lease) {
 }
 
 func (c *LeaseCache) TakeLease(key, owner string) error {
-	err := c.LeaseRepository.TakeLease(key, owner)
+	err := c.leaseRepo.TakeLease(key, owner)
 	if err != nil {
 		return err
 	}
@@ -145,7 +145,7 @@ func (c *LeaseCache) TakeLease(key, owner string) error {
 }
 func (c *LeaseCache) UpdateCheckpoint(key, checkpoint, owner string, counter int64) error {
 	//if successful, update lease in cache
-	err := c.LeaseRepository.UpdateCheckpoint(key, checkpoint, owner, counter)
+	err := c.leaseRepo.UpdateCheckpoint(key, checkpoint, owner, counter)
 	if err != nil {
 		return err
 	}

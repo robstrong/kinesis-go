@@ -3,10 +3,25 @@ package kinesis
 type LeaseRepoMock struct {
 	*LeaseRepoStub
 	createLeaseCalls []*lease
+	renewLeaseCalls  []struct {
+		key     string
+		owner   string
+		counter int64
+	}
 }
 
 func (d *LeaseRepoMock) CreateLeaseIfNotExists(l *lease) error {
 	d.createLeaseCalls = append(d.createLeaseCalls, l)
+	return d.err
+}
+
+func (d *LeaseRepoMock) RenewLease(key, owner string, counter int64) error {
+	d.renewLeaseCalls = append(d.renewLeaseCalls, struct {
+		key     string
+		owner   string
+		counter int64
+	}{key, owner, counter})
+
 	return d.err
 }
 
