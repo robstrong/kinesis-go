@@ -1,6 +1,7 @@
 package kinesis
 
 import (
+	"fmt"
 	"sync"
 	"time"
 
@@ -47,7 +48,7 @@ func newLostLeaseError(shardID, reason string, err error) LostLeaseError {
 }
 
 func (l LostLeaseError) Error() string {
-	return "kinesis: lost lease shardId=" + l.ShardID + " reason=" + l.Reason + " err=" + l.Err.Error()
+	return fmt.Sprintf("kinesis: lost lease shardId=%s reason=%s err=%v", l.ShardID, l.Reason, l.Err)
 }
 
 type DynamoLeaseRepository struct {

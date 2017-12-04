@@ -20,7 +20,7 @@ type lease struct {
 	Owner                string
 	Counter              int64
 	Checkpoint           string
-	ParentShardId        string
+	ParentShardID        string
 	lastCounterIncrement time.Time
 }
 
@@ -30,7 +30,7 @@ func (s *lease) IsClosed() bool {
 
 func (s *lease) IsExpired(ttl time.Duration, now time.Time) bool {
 	if s.lastCounterIncrement.IsZero() {
-		return true
+		return false
 	}
 	return s.lastCounterIncrement.Add(ttl).Before(now)
 }
@@ -192,7 +192,9 @@ func newAllLeases() *leases {
 
 func (a *leases) add(l *lease) {
 	a.m[l.Key] = l
-	a.owners[l.Owner] = append(a.owners[l.Owner], l)
+	if l.Owner != "" {
+		a.owners[l.Owner] = append(a.owners[l.Owner], l)
+	}
 }
 
 func (a *leases) getByShardId(shardID string) (l *lease, ok bool) {
@@ -200,8 +202,25 @@ func (a *leases) getByShardId(shardID string) (l *lease, ok bool) {
 	return
 }
 
-func (a *leases) numLeases() int {
-	return len(a.m)
+// Returns the number of shards that are ready to be read from
+// This does not include shards that are not ACTIVE or shards which
+// have a parent that is not in a CLOSED state
+func (a *leases) activeLeases() int {
+	count := 0
+	for _, l := range a.m {
+		if l.IsClosed() {
+			continue
+		}
+		if l.ParentShardID != "" {
+			if parentLease, ok := a.m[l.ParentShardID]; ok {
+				if !parentLease.IsClosed() {
+					continue
+				}
+			}
+		}
+		count++
+	}
+	return count
 }
 
 func (a *leases) numWorkers() int {
@@ -233,19 +252,24 @@ func (l *leaseManager) determineLeaseChanges() (leasesToTake, leasesToDrop []*le
 	if !allLeases.hasWorker(l.workerID) {
 		numWorkers++
 	}
-	targetLeases := allLeases.numLeases() / numWorkers
-	if allLeases.numLeases()%numWorkers > 0 {
+	l.logger.Logf("total workers: %d", numWorkers)
+
+	targetLeases := allLeases.activeLeases() / numWorkers
+	if allLeases.activeLeases()%numWorkers > 0 {
 		targetLeases++
 	}
+	l.logger.Logf("target leases: %d", targetLeases)
 
 	ownedLeases := allLeases.ownedBy(l.workerID)
+	l.logger.Logf("owned leases: %d", len(ownedLeases))
+
 	if len(ownedLeases) == targetLeases {
 		//we have the right amount of leases, no changes
 		return
 	}
 	if len(ownedLeases) > targetLeases {
 		//we have too many leases, drop the difference
-		leasesToDrop = ownedLeases[0 : len(ownedLeases)-targetLeases]
+		leasesToDrop = ownedLeases[:len(ownedLeases)-targetLeases]
 		//the leases that are dropped are kind of randomized since the lease list is in a map,
 		// which is what we want
 		return
@@ -257,14 +281,15 @@ func (l *leaseManager) determineLeaseChanges() (leasesToTake, leasesToDrop []*le
 		if len(leasesToTake) == targetLeases {
 			break
 		}
-		//we already have this lease, skip
-		if lease.Owner == l.workerID {
+		//we already have this lease or the shard is complete, skip
+		if lease.Owner == l.workerID || lease.IsClosed() {
 			continue
 		}
+
 		//don't take a lease that had a parent that is still being read from
-		if lease.ParentShardId != "" {
-			parentLease, ok := allLeases.getByShardId(lease.ParentShardId)
-			if ok && parentLease.IsClosed() {
+		if lease.ParentShardID != "" {
+			parentLease, ok := allLeases.getByShardId(lease.ParentShardID)
+			if ok && !parentLease.IsClosed() {
 				continue
 			}
 		}
@@ -275,12 +300,12 @@ func (l *leaseManager) determineLeaseChanges() (leasesToTake, leasesToDrop []*le
 
 	//should we steal one?
 	if len(leasesToTake) == 0 && targetLeases > 0 {
-		//take one from another worker that has numLeases == target
+		//take one from another worker that has numLeases > target
 		for owner, leases := range allLeases.owners {
 			if owner == l.workerID {
 				continue
 			}
-			if len(leases) == targetLeases {
+			if len(leases) > targetLeases {
 				leasesToTake = append(leasesToTake, leases[0])
 				break
 			}

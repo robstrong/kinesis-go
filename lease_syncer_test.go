@@ -50,7 +50,7 @@ func Test_leaseSyncer_Run(t *testing.T) {
 			exited = true
 		}()
 		close(sh)
-		time.Sleep(time.Second)
+		time.Sleep(time.Millisecond)
 		if !exited {
 			t.Error("syncer did not shutdown")
 		}

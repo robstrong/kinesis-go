@@ -10,6 +10,12 @@ type LeaseRepoMock struct {
 	}
 }
 
+func NewLeaseRepoMock() *LeaseRepoMock {
+	return &LeaseRepoMock{
+		LeaseRepoStub: &LeaseRepoStub{},
+	}
+}
+
 func (d *LeaseRepoMock) CreateLeaseIfNotExists(l *lease) error {
 	d.createLeaseCalls = append(d.createLeaseCalls, l)
 	return d.err

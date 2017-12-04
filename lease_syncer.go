@@ -81,7 +81,7 @@ func (l *leaseSyncer) syncLeases() error {
 			Key:           *s.ShardId,
 			Counter:       0,
 			Owner:         "",
-			ParentShardId: aws.StringValue(s.ParentShardId),
+			ParentShardID: aws.StringValue(s.ParentShardId),
 			Checkpoint:    l.initialPositionInStream.String(),
 		}
 		err := l.leaseRepo.CreateLeaseIfNotExists(lease)
