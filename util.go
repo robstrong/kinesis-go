@@ -7,7 +7,7 @@ import (
 	"strings"
 )
 
-var DefaultLogger = &Log{w: os.Stdout, err: os.Stderr}
+var DefaultLogger Logger = &Log{w: os.Stdout, err: os.Stderr}
 
 type Log struct {
 	w   io.Writer
@@ -15,7 +15,7 @@ type Log struct {
 }
 
 func (l *Log) Logf(msg string, args ...interface{}) {
-	fmt.Fprintf(l.w, msg, args...)
+	fmt.Fprintf(l.w, msg+"\n", args...)
 }
 func (l *Log) Errorf(msg string, args ...interface{}) {
 	fmt.Fprintf(l.err, msg, args...)
@@ -35,3 +35,7 @@ func (e Errors) Error() string {
 	}
 	return strings.TrimSuffix(msg, "\n")
 }
+
+type Error string
+
+func (e Error) Error() string { return string(e) }

@@ -68,7 +68,7 @@ func Test_leaseManager_RenewLeases(t *testing.T) {
 	t.Run("errs returned by repo.RenewLease() is returned by RenewLeases()", func(t *testing.T) {
 		repo := NewLeaseRepoMock()
 		expectedErr := errors.New("test")
-		repo.LeaseRepoStub.err = expectedErr
+		repo.err = expectedErr
 		l := &leaseManager{
 			leaseRepo: repo,
 			leaseTTL:  time.Minute,

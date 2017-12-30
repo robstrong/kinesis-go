@@ -37,11 +37,11 @@ func (l *testLogger) quiet() *testLogger {
 func Test_leaseSyncer_Run(t *testing.T) {
 	t.Run("shutdown when shutdown chan is closed", func(t *testing.T) {
 		l := &leaseSyncer{
-			leaseRepo:     &LeaseRepoStub{},
-			logger:        newTestLogger(t),
-			kinesis:       &KinesisProxyStub{},
-			streamName:    "",
-			leaseSyncFreq: time.Second,
+			leaseRepo:  &LeaseRepoStub{},
+			logger:     newTestLogger(t),
+			kinesis:    &KinesisProxyStub{},
+			streamName: "",
+			syncFreq:   time.Second,
 		}
 		sh := make(chan struct{})
 		exited := false
@@ -59,11 +59,11 @@ func Test_leaseSyncer_Run(t *testing.T) {
 	t.Run("describe stream is called according to freq", func(t *testing.T) {
 		kMock := &KinesisProxyMock{err: errors.New("")}
 		l := &leaseSyncer{
-			leaseRepo:     &LeaseRepoStub{},
-			logger:        newTestLogger(t).quiet(),
-			kinesis:       kMock,
-			streamName:    "",
-			leaseSyncFreq: time.Millisecond * 10,
+			leaseRepo:  &LeaseRepoStub{},
+			logger:     newTestLogger(t).quiet(),
+			kinesis:    kMock,
+			streamName: "",
+			syncFreq:   time.Millisecond * 10,
 		}
 		sh := make(chan struct{})
 		exited := false
@@ -132,12 +132,9 @@ func Test_leaseSyncer_syncLeases(t *testing.T) {
 	})
 
 	t.Run("create lease if it exists in kinesis, but not the repo", func(t *testing.T) {
-		leaseRepo := &LeaseRepoMock{
-			LeaseRepoStub: &LeaseRepoStub{
-				leases: []*lease{
-					{Key: "123"},
-				},
-			},
+		leaseRepo := NewLeaseRepoMock()
+		leaseRepo.leases = map[string]*lease{
+			"123": {Key: "123"},
 		}
 		l := &leaseSyncer{
 			logger:    newTestLogger(t),
@@ -161,7 +158,7 @@ func Test_leaseSyncer_syncLeases(t *testing.T) {
 			t.Errorf("leaseSyncer.syncLeases() expected 1 create lease call, got %d", len(leaseRepo.createLeaseCalls))
 		}
 		if leaseRepo.createLeaseCalls[0].Key != "456" {
-			t.Errorf("leaseSyncer.syncLeases() expected shard key to be '456', got %d", leaseRepo.createLeaseCalls[0].Key)
+			t.Errorf("leaseSyncer.syncLeases() expected shard key to be '456', got %s", leaseRepo.createLeaseCalls[0].Key)
 		}
 	})
 }

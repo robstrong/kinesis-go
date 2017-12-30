@@ -3,6 +3,8 @@ package kinesis
 import (
 	"time"
 
+	"github.com/aws/aws-sdk-go/service/kinesis/kinesisiface"
+
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/kinesis"
 )
@@ -18,25 +20,26 @@ func (e errStreamNotActive) Error() string {
 type leaseSyncer struct {
 	leaseRepo leaseRepo
 	logger    Logger
-	kinesis   kinesisProxy
+	kinesis   kinesisiface.KinesisAPI
 
 	streamName              string
-	leaseSyncFreq           time.Duration
+	syncFreq                time.Duration
 	initialPositionInStream InitialPositionInStream
 }
 
 //checks for new shards and creates leases in the LeaseRepository for them
 func (l *leaseSyncer) Run(shutdown chan struct{}) {
-	tick := time.NewTicker(l.leaseSyncFreq)
+	tick := time.NewTicker(l.syncFreq)
 	for {
 		select {
 		case <-shutdown:
-			l.logger.Logf("syncer: shutting down shard syncer")
+			l.logger.Logf("lease syncer: shutting down shard syncer")
 			return
 		case <-tick.C:
+			l.logger.Logf("lease syncer: running sync from kinesis api")
 			err := l.syncLeases()
 			if err != nil {
-				l.logger.Logf("lease manager: error syncing leases: %s", err)
+				l.logger.Logf("lease syncer: error syncing leases: %s", err)
 			}
 		}
 	}
@@ -84,6 +87,7 @@ func (l *leaseSyncer) syncLeases() error {
 			ParentShardID: aws.StringValue(s.ParentShardId),
 			Checkpoint:    l.initialPositionInStream.String(),
 		}
+		l.logger.Logf("lease syncer: adding lease for shard %s", lease.Key)
 		err := l.leaseRepo.CreateLeaseIfNotExists(lease)
 		if err != nil {
 			errs = append(errs, err)

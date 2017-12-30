@@ -4,6 +4,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/aws/aws-sdk-go/service/kinesis/kinesisiface"
+
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/kinesis"
 )
@@ -13,8 +15,8 @@ const CheckpointShardClosed = "SHARD_END"
 type ShardLease struct {
 	StreamName string
 	ShardID    string
-	Checkpoint string
 }
+
 type lease struct {
 	Key                  string
 	Owner                string
@@ -52,11 +54,12 @@ type leaseManager struct {
 	logger      Logger
 	leaseSyncer *leaseSyncer
 
-	workerID       string
-	streamName     string
-	leaseTTL       time.Duration
-	leaseSyncFreq  time.Duration
-	leaseRenewFreq time.Duration
+	workerID              string
+	streamName            string
+	leaseTTL              time.Duration
+	leaseSyncFromRepoFreq time.Duration
+	leaseRenewFreq        time.Duration
+	takeReleaseLeaseFreq  time.Duration
 
 	allLeases   map[string]*lease
 	allLeasesMu sync.Mutex
@@ -64,7 +67,7 @@ type leaseManager struct {
 	shutdown chan struct{}
 }
 
-func newLeaseManager(r leaseRepo, k *kinesis.Kinesis, config Config) *leaseManager {
+func newLeaseManager(r leaseRepo, k kinesisiface.KinesisAPI, config *Config) *leaseManager {
 	lm := &leaseManager{
 		leaseRepo: r,
 		logger:    DefaultLogger,
@@ -73,12 +76,15 @@ func newLeaseManager(r leaseRepo, k *kinesis.Kinesis, config Config) *leaseManag
 			logger:                  DefaultLogger,
 			kinesis:                 k,
 			streamName:              config.StreamName,
-			leaseSyncFreq:           config.ShardSyncFrequency,
+			syncFreq:                config.ShardSyncFromAPIFrequency,
 			initialPositionInStream: config.InitialPositionInStream,
 		},
-		workerID:  config.WorkerID,
-		leaseTTL:  config.LeaseTTL,
-		allLeases: map[string]*lease{},
+		leaseRenewFreq:        config.LeaseRenewFrequency,
+		leaseSyncFromRepoFreq: config.LeaseSyncFromRepoFreq,
+		takeReleaseLeaseFreq:  config.TakeAndReleaseLeasesFreq,
+		workerID:              config.WorkerID,
+		leaseTTL:              config.LeaseTTL,
+		allLeases:             map[string]*lease{},
 	}
 	return lm
 }
@@ -88,9 +94,10 @@ func (l *leaseManager) Start() (takenLeases, lostLeases chan ShardLease) {
 	lostLeases = make(chan ShardLease)
 
 	l.shutdown = make(chan struct{})
-	go l.runLeaseRenewer(lostLeases) //renews currently held leases
-	go l.runLeaseWatcher()           //syncs leases in repo with l.allLeases
-	go l.leaseSyncer.Run(l.shutdown) //syncs leases in Kinesis API with leases in repo
+	go l.runLeaseRenewer(lostLeases)                           //renews currently held leases
+	go l.runLeaseWatcher()                                     //syncs leases in repo with l.allLeases
+	go l.leaseSyncer.Run(l.shutdown)                           //syncs leases in Kinesis API with leases in repo
+	go l.runTakeAndReleaseLeaseWorker(takenLeases, lostLeases) //determine if leases in l.allLeases should be taken/released
 
 	//do stuff to get leases or whatever
 	return takenLeases, lostLeases
@@ -135,7 +142,7 @@ func (l *leaseManager) RenewLeases() []error {
 }
 
 func (l *leaseManager) runLeaseWatcher() {
-	ticker := time.NewTicker(l.leaseSyncFreq)
+	ticker := time.NewTicker(l.leaseSyncFromRepoFreq)
 	defer ticker.Stop()
 	for {
 		select {
@@ -151,20 +158,37 @@ func (l *leaseManager) runLeaseWatcher() {
 }
 
 //Returns new leases to process and leases that we should drop
-func (l *leaseManager) TakeAndReleaseLeases() error {
-	leasesToTake, leasesToGiveUp := l.determineLeaseChanges()
-	for _, lease := range leasesToTake {
-		if err := l.TakeLease(lease.Key, l.workerID); err != nil {
-			return err
+func (l *leaseManager) runTakeAndReleaseLeaseWorker(takenLeases, lostLeases chan ShardLease) {
+	ticker := time.NewTicker(l.takeReleaseLeaseFreq)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			leasesToTake, leasesToGiveUp := l.determineLeaseChanges()
+			for _, lease := range leasesToTake {
+				if err := l.TakeLease(lease.Key, l.workerID); err != nil {
+					l.logger.Errorf("lease manager: error taking lease for shard %s: %v", lease.Key, err)
+				}
+				l.logger.Logf("lease manager: took lease %s", lease.Key)
+				takenLeases <- ShardLease{
+					StreamName: l.streamName,
+					ShardID:    lease.Key,
+				}
+			}
+			for _, lease := range leasesToGiveUp {
+				if err := l.DropLease(lease.Key, l.workerID); err != nil {
+					l.logger.Errorf("lease manager: error dropping lease for shard %s: %v", lease.Key, err)
+				}
+				l.logger.Logf("lease manager: dropped lease %s", lease.Key)
+				lostLeases <- ShardLease{
+					StreamName: l.streamName,
+					ShardID:    lease.Key,
+				}
+			}
+		case <-l.shutdown:
+			return
 		}
 	}
-	for _, lease := range leasesToGiveUp {
-		if err := l.DropLease(lease.Key, l.workerID); err != nil {
-			return err
-		}
-	}
-	l.logger.Logf("took %d leases, dropped %d leases", len(leasesToTake), len(leasesToGiveUp))
-	return nil
 }
 
 func (l *leaseManager) copyOfAllLeases() *leases {
@@ -191,6 +215,19 @@ func newAllLeases() *leases {
 }
 
 func (a *leases) add(l *lease) {
+	var oldOwner string
+	if oldLease, ok := a.m[l.Key]; ok {
+		oldOwner = oldLease.Owner
+	}
+	//if owner changed, remove lease from previous owner
+	if l.Owner != oldOwner && oldOwner != "" {
+		for i, lease := range a.owners[oldOwner] {
+			if lease.Key == l.Key {
+				a.owners[oldOwner] = append(a.owners[oldOwner][:i], a.owners[oldOwner][i+1:]...)
+				break
+			}
+		}
+	}
 	a.m[l.Key] = l
 	if l.Owner != "" {
 		a.owners[l.Owner] = append(a.owners[l.Owner], l)
@@ -223,6 +260,9 @@ func (a *leases) activeLeases() int {
 	return count
 }
 
+func (a *leases) length() int {
+	return len(a.m)
+}
 func (a *leases) numWorkers() int {
 	return len(a.owners)
 }
@@ -253,6 +293,7 @@ func (l *leaseManager) determineLeaseChanges() (leasesToTake, leasesToDrop []*le
 		numWorkers++
 	}
 	l.logger.Logf("total workers: %d", numWorkers)
+	l.logger.Logf("total leases/active leases: %d/%d", allLeases.length(), allLeases.activeLeases())
 
 	targetLeases := allLeases.activeLeases() / numWorkers
 	if allLeases.activeLeases()%numWorkers > 0 {
@@ -335,6 +376,7 @@ func (l *leaseManager) UpdateLeases() error {
 			//we haven't seen this lease before, add it
 			lease.lastCounterIncrement = time.Now()
 			l.allLeases[lease.Key] = lease
+			l.logger.Logf("lease manager: adding lease %q to local cache", lease.Key)
 		}
 	}
 	//TODO: remove leases that don't exist anymore

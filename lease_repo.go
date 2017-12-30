@@ -10,6 +10,8 @@ import (
 
 type leaseRepo interface {
 	GetLeases() ([]*lease, error)
+	InitRepository() error
+
 	CreateLeaseIfNotExists(*lease) error
 
 	//takes a lease
@@ -52,20 +54,53 @@ func (l LostLeaseError) Error() string {
 }
 
 type DynamoLeaseRepository struct {
-	c     *dynamodb.DynamoDB
-	table string
-}
-
-func NewDynamoLeaseRepository(c *dynamodb.DynamoDB, table string) *DynamoLeaseRepository {
-	return &DynamoLeaseRepository{
-		c:     c,
-		table: table,
+	c               *dynamodb.DynamoDB
+	table           string
+	initialCapacity struct {
+		r int64
+		w int64
 	}
 }
 
+func NewDynamoLeaseRepository(c *dynamodb.DynamoDB, table string, read, write int64) *DynamoLeaseRepository {
+	return &DynamoLeaseRepository{
+		c:               c,
+		table:           table,
+		initialCapacity: struct{ r, w int64 }{r: read, w: write},
+	}
+}
+
+func (d *DynamoLeaseRepository) InitRepository() error {
+	return d.CreateTableIfNotExists()
+}
+
 //this will check that the necessary table exists in DynamoDB and create it if not
-func (d *DynamoLeaseRepository) Init() error {
-	//TODO: check for table, create if not exists
+func (d *DynamoLeaseRepository) CreateTableIfNotExists() error {
+	t := &leaseTable{}
+	req := &dynamodb.CreateTableInput{}
+	req.SetTableName(d.table).
+		SetKeySchema(t.KeySchema()).
+		SetAttributeDefinitions(t.AttributeDefinitions())
+	th := &dynamodb.ProvisionedThroughput{}
+	th.SetReadCapacityUnits(d.initialCapacity.r).
+		SetWriteCapacityUnits(d.initialCapacity.w)
+	req.SetProvisionedThroughput(th)
+	_, err := d.c.CreateTable(req)
+	if err != nil {
+		//TODO: check for table already exists err
+		return err
+	}
+	return nil
+}
+
+//TODO: setup this table def
+type leaseTable struct {
+}
+
+func (l *leaseTable) KeySchema() []*dynamodb.KeySchemaElement {
+	return nil
+}
+func (l *leaseTable) AttributeDefinitions() []*dynamodb.AttributeDefinition {
 	return nil
 }
 
